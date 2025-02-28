@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Monster Battle Game</title>
+    <style>
+        canvas {
+            border: 2px solid black;
+        }
+        #gameContainer {
+            text-align: center;
+        }
+        #instructions {
+            margin: 20px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            background-color: #f9f9f9;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <div id="instructions">
+            <h2>遊戲規則</h2>
+            <p>使用 WASD 移動角色</p>
+            <p>使用方向鍵（←↑→↓）和斜向鍵發射石頭（8個方向）</p>
+            <p>每次發射會連發2顆石頭</p>
+            <p>你有10滴血，碰到怪物會失去1滴血</p>
+            <p>普通怪物有2滴血，每3秒會多生成一隻</p>
+            <p>每30秒會生成一隻Boss（紫色），有10滴血且會發射飛彈</p>
+            <p>Boss碰撞不會消失，只能被石頭擊殺</p>
+            <p>按空白鍵召喚大Boss（紅色），每按一次多一隻（最多5隻）</p>
+            <p>死亡後顯示存活時間，按 CapsLock 重新開始</p>
+        </div>
+        <canvas id="gameCanvas" width="400" height="400"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // 遊戲狀態
+        let gameState = {
+            player: {
+                x: canvas.width / 2,
+                y: canvas.height / 2,
+                size: 20,
+                speed: 5,
+                health: 10,
+                color: 'blue'
+            },
+            monsters: [],
+            bosses: [],
+            stones: [],
+            missiles: [], // Boss發射的飛彈
+            megaBosses: [], // 大Boss陣列
+            gameOver: false,
+            lastMonsterSpawn: Date.now(),
+            lastBossSpawn: Date.now(),
+            lastShot: 0,
+            megaBossCount: 0, // 已召喚的大Boss數量
+            maxMegaBosses: 5, // 最大可召喚數量
+            startTime: Date.now(),
+            survivalTime: 0
+        };
+
+        // 八個方向的向量
+        const DIRECTIONS = {
+            'ArrowUp': { x: 0, y: -1 },
+            'ArrowDown': { x: 0, y: 1 },
+            'ArrowLeft': { x: -1, y: 0 },
+            'ArrowRight': { x: 1, y: 0 },
+            'ArrowUpLeft': { x: -0.707, y: -0.707 },
+            'ArrowUpRight': { x: 0.707, y: -0.707 },
+            'ArrowDownLeft': { x: -0.707, y: 0.707 },
+            'ArrowDownRight': { x: 0.707, y: 0.707 }
+        };
+
+        function createMonster() {
+            let x, y;
+            if (Math.random() < 0.5) {
+                x = Math.random() < 0.5 ? 0 : canvas.width;
+                y = Math.random() * canvas.height;
+            } else {
+                x = Math.random() * canvas.width;
+                y = Math.random() < 0.5 ? 0 : canvas.height;
+            }
+            
+            return {
+                x: x,
+                y: y,
+                size: 20,
+                speed: 2,
+                health: 2,
+                color: 'red',
+                isBoss: false
+            };
+        }
+
+        function createBoss() {
+            // Boss從隨機邊緣生成
+            let x, y;
+            if (Math.random() < 0.5) {
+                x = Math.random() < 0.5 ? 0 : canvas.width;
+                y = Math.random() * canvas.height;
+            } else {
+                x = Math.random() * canvas.width;
+                y = Math.random() < 0.5 ? 0 : canvas.height;
+            }
+            
+            return {
+                x: x,
+                y: y,
+                size: 30,  // Boss比較大
+                speed: 2,  // 與普通怪物一樣快
+                health: 10,
+                color: 'purple',
+                isBoss: true,
+                lastMissile: Date.now() // 上次發射飛彈的時間
+            };
+        }
+        
+        function createMegaBoss() {
+            // 計算位置，均勻分布在畫面上方
+            const index = gameState.megaBossCount;
+            const segmentWidth = canvas.width / (gameState.maxMegaBosses + 1);
+            const x = segmentWidth * (index + 1) - 30; // 30是大Boss的半寬
+            
+            return {
+                x: x,
+                y: 0,
+                size: 60,  // 大Boss更大
+                speed: 1.5,  // 大Boss移動較慢
+                health: 30,
+                color: 'darkred',
+                isBoss: true,
+                isMegaBoss: true,
+                lastMissile: Date.now() + index * 200, // 錯開發射時間
+                missileCount: 3, // 一次發射3顆飛彈
+                index: index // 保存索引，用於定位
+            };
+        }
+
+        // 發射石頭（連發兩顆）
+        function createStones(direction) {
+            const now = Date.now();
+            if (now - gameState.lastShot > 300) { // 發射冷卻時間
+                // 第一顆石頭
+                gameState.stones.push({
+                    x: gameState.player.x + gameState.player.size/2,
+                    y: gameState.player.y + gameState.player.size/2,
+                    size: 8,
+                    speed: 8,
+                    direction: direction
+                });
+
+                // 延遲100ms發射第二顆
+                setTimeout(() => {
+                    if (!gameState.gameOver) {
+                        gameState.stones.push({
+                            x: gameState.player.x + gameState.player.size/2,
+                            y: gameState.player.y + gameState.player.size/2,
+                            size: 8,
+                            speed: 8,
+                            direction: direction
+                        });
+                    }
+                }, 100);
+
+                gameState.lastShot = now;
+            }
+        }
+
+        // Boss發射飛彈
+        function createMissile(boss) {
+            const now = Date.now();
+            if (now - boss.lastMissile > 500) { // 每0.5秒發射一次
+                // 計算朝向玩家的方向
+                const dx = gameState.player.x - boss.x;
+                const dy = gameState.player.y - boss.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                const direction = {
+                    x: dx / distance,
+                    y: dy / distance
+                };
+                
+                // 普通Boss發射一顆飛彈
+                if (!boss.isMegaBoss) {
+                    gameState.missiles.push({
+                        x: boss.x + boss.size/2,
+                        y: boss.y + boss.size/2,
+                        size: 10,
+                        speed: 4,
+                        direction: direction,
+                        color: 'orange'
+                    });
+                } 
+                // 大Boss發射多顆飛彈
+                else {
+                    const missileCount = boss.missileCount || 3;
+                    
+                    // 發射中央飛彈
+                    gameState.missiles.push({
+                        x: boss.x + boss.size/2,
+                        y: boss.y + boss.size/2,
+                        size: 15, // 大Boss飛彈更大
+                        speed: 3,
+                        direction: direction,
+                        color: 'red'
+                    });
+                    
+                    // 發射兩側飛彈
+                    for (let i = 1; i <= (missileCount-1)/2; i++) {
+                        // 左側飛彈
+                        const leftDir = {
+                            x: Math.cos(Math.atan2(direction.y, direction.x) - 0.3 * i),
+                            y: Math.sin(Math.atan2(direction.y, direction.x) - 0.3 * i)
+                        };
+                        
+                        gameState.missiles.push({
+                            x: boss.x + boss.size/2,
+                            y: boss.y + boss.size/2,
+                            size: 12,
+                            speed: 3,
+                            direction: leftDir,
+                            color: 'red'
+                        });
+                        
+                        // 右側飛彈
+                        const rightDir = {
+                            x: Math.cos(Math.atan2(direction.y, direction.x) + 0.3 * i),
+                            y: Math.sin(Math.atan2(direction.y, direction.x) + 0.3 * i)
+                        };
+                        
+                        gameState.missiles.push({
+                            x: boss.x + boss.size/2,
+                            y: boss.y + boss.size/2,
+                            size: 12,
+                            speed: 3,
+                            direction: rightDir,
+                            color: 'red'
+                        });
+                    }
+                }
+                
+                boss.lastMissile = now;
+            }
+        }
+
+        gameState.monsters.push(createMonster());
+
+        // 監聽鍵盤事件
+        const keys = {};
+        document.addEventListener('keydown', (e) => {
+            keys[e.key] = true;
+            
+            // 重新開始遊戲
+            if (e.code === 'CapsLock' && gameState.gameOver) {
+                resetGame();
+                return;
+            }
+
+            // 檢查是否按下空白鍵召喚大Boss
+            if (e.code === 'Space' && gameState.megaBossCount < gameState.maxMegaBosses && !gameState.gameOver) {
+                const newBoss = createMegaBoss();
+                gameState.megaBosses.push(newBoss);
+                gameState.megaBossCount++;
+                
+                // 召喚特效 - 閃爍畫面
+                ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                return; // 避免空白鍵同時被解釋為發射石頭
+            }
+
+            // 檢查斜向按鍵組合
+            if (keys['ArrowUp'] && keys['ArrowLeft']) createStones(DIRECTIONS.ArrowUpLeft);
+            else if (keys['ArrowUp'] && keys['ArrowRight']) createStones(DIRECTIONS.ArrowUpRight);
+            else if (keys['ArrowDown'] && keys['ArrowLeft']) createStones(DIRECTIONS.ArrowDownLeft);
+            else if (keys['ArrowDown'] && keys['ArrowRight']) createStones(DIRECTIONS.ArrowDownRight);
+            // 單一方向
+            else if (DIRECTIONS[e.key]) createStones(DIRECTIONS[e.key]);
+        });
+
+        document.addEventListener('keyup', (e) => {
+            keys[e.key] = false;
+        });
+
+        function updatePlayer() {
+            if (keys['a'] && gameState.player.x > 0) {
+                gameState.player.x -= gameState.player.speed;
+            }
+            if (keys['d'] && gameState.player.x < canvas.width - gameState.player.size) {
+                gameState.player.x += gameState.player.speed;
+            }
+            if (keys['w'] && gameState.player.y > 0) {
+                gameState.player.y -= gameState.player.speed;
+            }
+            if (keys['s'] && gameState.player.y < canvas.height - gameState.player.size) {
+                gameState.player.y += gameState.player.speed;
+            }
+        }
+
+        function updateProjectiles() {
+            // 更新石頭位置
+            gameState.stones = gameState.stones.filter(stone => {
+                stone.x += stone.direction.x * stone.speed;
+                stone.y += stone.direction.y * stone.speed;
+                
+                return stone.x >= 0 && stone.x <= canvas.width && 
+                       stone.y >= 0 && stone.y <= canvas.height;
+            });
+            
+            // 更新飛彈位置
+            gameState.missiles = gameState.missiles.filter(missile => {
+                missile.x += missile.direction.x * missile.speed;
+                missile.y += missile.direction.y * missile.speed;
+                
+                return missile.x >= 0 && missile.x <= canvas.width && 
+                       missile.y >= 0 && missile.y <= canvas.height;
+            });
+        }
+
+        function updateEnemies() {
+            const currentTime = Date.now();
+            // 生成普通怪物
+            if (currentTime - gameState.lastMonsterSpawn >= 3000) {
+                gameState.monsters.push(createMonster());
+                gameState.lastMonsterSpawn = currentTime;
+            }
+
+            // 每30秒生成一個Boss
+            if (currentTime - gameState.lastBossSpawn >= 30000) {
+                gameState.bosses.push(createBoss());
+                gameState.lastBossSpawn = currentTime;
+            }
+
+            // 更新普通怪物位置
+            gameState.monsters.forEach(monster => {
+                const dx = gameState.player.x - monster.x;
+                const dy = gameState.player.y - monster.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance > 0) {
+                    monster.x += (dx / distance) * monster.speed;
+                    monster.y += (dy / distance) * monster.speed;
+                }
+            });
+
+            // 更新Boss位置並讓Boss發射飛彈
+            gameState.bosses.forEach(boss => {
+                const dx = gameState.player.x - boss.x;
+                const dy = gameState.player.y - boss.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance > 0) {
+                    boss.x += (dx / distance) * boss.speed;
+                    boss.y += (dy / distance) * boss.speed;
+                }
+                
+                // Boss發射飛彈
+                createMissile(boss);
+            });
+            
+            // 更新大Boss
+            gameState.megaBosses.forEach(boss => {
+                const dx = gameState.player.x - boss.x;
+                const dy = gameState.player.y - boss.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance > 0) {
+                    boss.x += (dx / distance) * boss.speed;
+                    boss.y += (dy / distance) * boss.speed;
+                }
+                
+                // 大Boss發射飛彈
+                createMissile(boss);
+            });
+        }
+
+        function checkCollisions() {
+            // 檢查石頭和怪物的碰撞
+            gameState.stones = gameState.stones.filter(stone => {
+                let stoneHit = false;
+                
+                // 檢查普通怪物
+                gameState.monsters = gameState.monsters.filter(monster => {
+                    const dx = stone.x - monster.x;
+                    const dy = stone.y - monster.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (distance < stone.size + monster.size/2) {
+                        monster.health--;
+                        stoneHit = true;
+                        return monster.health > 0;
+                    }
+                    return true;
+                });
+                
+                // 檢查Boss
+                gameState.bosses = gameState.bosses.filter(boss => {
+                    const dx = stone.x - boss.x;
+                    const dy = stone.y - boss.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (distance < stone.size + boss.size/2) {
+                        boss.health--;
+                        stoneHit = true;
+                        return boss.health > 0;
+                    }
+                    return true;
+                });
+                
+                // 檢查大Boss
+                gameState.megaBosses = gameState.megaBosses.filter(boss => {
+                    const dx = stone.x - boss.x;
+                    const dy = stone.y - boss.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (distance < stone.size + boss.size/2) {
+                        boss.health--;
+                        stoneHit = true;
+                        return boss.health > 0;
+                    }
+                    return true;
+                });
+                
+                return !stoneHit;
+            });
+
+            // 檢查玩家和怪物的碰撞
+            gameState.monsters = gameState.monsters.filter(monster => {
+                const dx = gameState.player.x - monster.x;
+                const dy = gameState.player.y - monster.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance < gameState.player.size/2 + monster.size/2) {
+                    gameState.player.health--;
+                    checkGameOver();
+                    return false;
+                }
+                return true;
+            });
+
+            // 檢查玩家和Boss的碰撞
+            gameState.bosses.forEach(boss => {
+                const dx = gameState.player.x - boss.x;
+                const dy = gameState.player.y - boss.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance < gameState.player.size/2 + boss.size/2) {
+                    gameState.player.health -= 2; // Boss造成雙倍傷害
+                    checkGameOver();
+                    
+                    // Boss不會消失，但會被向後擊退一點
+                    const knockbackDistance = 20;
+                    const knockbackDirection = {
+                        x: (boss.x - gameState.player.x) / distance,
+                        y: (boss.y - gameState.player.y) / distance
+                    };
+                    
+                    boss.x += knockbackDirection.x * knockbackDistance;
+                    boss.y += knockbackDirection.y * knockbackDistance;
+                }
+            });
+            
+            // 檢查玩家和大Boss的碰撞
+            gameState.megaBosses.forEach(boss => {
+                const dx = gameState.player.x - boss.x;
+                const dy = gameState.player.y - boss.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance < gameState.player.size/2 + boss.size/2) {
+                    gameState.player.health -= 3; // 大Boss造成三倍傷害
+                    checkGameOver();
+                    
+                    // 大Boss不會消失，但會被向後擊退一點
+                    const knockbackDistance = 15;
+                    const knockbackDirection = {
+                        x: (boss.x - gameState.player.x) / distance,
+                        y: (boss.y - gameState.player.y) / distance
+                    };
+                    
+                    boss.x += knockbackDirection.x * knockbackDistance;
+                    boss.y += knockbackDirection.y * knockbackDistance;
+                }
+            });
+            
+            // 檢查飛彈和玩家的碰撞
+            gameState.missiles = gameState.missiles.filter(missile => {
+                const dx = gameState.player.x + gameState.player.size/2 - missile.x;
+                const dy = gameState.player.y + gameState.player.size/2 - missile.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance < gameState.player.size/2 + missile.size/2) {
+                    // 大Boss的紅色飛彈造成2點傷害
+                    if (missile.color === 'red') {
+                        gameState.player.health -= 2;
+                    } else {
+                        gameState.player.health--;
+                    }
+                    checkGameOver();
+                    return false;
+                }
+                return true;
+            });
+        }
+
+        function checkGameOver() {
+            if (gameState.player.health <= 0) {
+                gameState.gameOver = true;
+                gameState.survivalTime = Math.floor((Date.now() - gameState.startTime) / 1000);
+            }
+        }
+
+        function formatTime(seconds) {
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = seconds % 60;
+            return `${minutes}分${remainingSeconds}秒`;
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // 繪製玩家
+            ctx.fillStyle = gameState.player.color;
+            ctx.fillRect(gameState.player.x, gameState.player.y, 
+                        gameState.player.size, gameState.player.size);
+            
+            // 繪製石頭
+            ctx.fillStyle = 'brown';
+            gameState.stones.forEach(stone => {
+                ctx.beginPath();
+                ctx.arc(stone.x, stone.y, stone.size/2, 0, Math.PI * 2);
+                ctx.fill();
+            });
+            
+            // 繪製飛彈
+            gameState.missiles.forEach(missile => {
+                ctx.fillStyle = missile.color;
+                ctx.beginPath();
+                ctx.arc(missile.x, missile.y, missile.size/2, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // 繪製飛彈尾巴
+                ctx.strokeStyle = 'yellow';
+                ctx.beginPath();
+                ctx.moveTo(missile.x, missile.y);
+                ctx.lineTo(
+                    missile.x - missile.direction.x * missile.speed * 3,
+                    missile.y - missile.direction.y * missile.speed * 3
+                );
+                ctx.stroke();
+            });
+            
+            // 繪製普通怪物
+            gameState.monsters.forEach(monster => {
+                ctx.fillStyle = monster.color;
+                ctx.fillRect(monster.x, monster.y, monster.size, monster.size);
+                
+                ctx.fillStyle = 'black';
+                ctx.font = '12px Arial';
+                ctx.fillText(monster.health, monster.x + 5, monster.y - 5);
+            });
+            
+            // 繪製Boss
+            gameState.bosses.forEach(boss => {
+                ctx.fillStyle = boss.color;
+                ctx.fillRect(boss.x, boss.y, boss.size, boss.size);
+                
+                // Boss血量顯示
+                ctx.fillStyle = 'white';
+                ctx.font = '16px Arial';
+                ctx.fillText(`${boss.health}`, boss.x + boss.size/3, boss.y + boss.size/2);
+            });
+            
+            // 繪製大Boss
+            gameState.megaBosses.forEach(boss => {
+                ctx.fillStyle = boss.color;
+                ctx.fillRect(boss.x, boss.y, boss.size, boss.size);
+                
+                // 大Boss血量顯示
+                ctx.fillStyle = 'white';
+                ctx.font = '24px Arial';
+                ctx.fillText(`${boss.health}`, boss.x + boss.size/3, boss.y + boss.size/2);
+                
+                // 大Boss光環效果
+                ctx.strokeStyle = 'orange';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(boss.x + boss.size/2, boss.y + boss.size/2, boss.size * 0.8, 0, Math.PI * 2);
+                ctx.stroke();
+            });
+            
+            // 繪製血量和時間
+            ctx.fillStyle = 'black';
+            ctx.font = '20px Arial';
+            ctx.fillText(`血量: ${gameState.player.health}`, 10, 30);
+            
+            // 顯示下一個Boss生成倒計時
+            if (!gameState.gameOver) {
+                const currentTime = Math.floor((Date.now() - gameState.startTime) / 1000);
+                ctx.fillText(`時間: ${formatTime(currentTime)}`, 10, 60);
+                
+                const nextBossIn = 30 - Math.floor((Date.now() - gameState.lastBossSpawn) / 1000);
+                if (nextBossIn > 0) {
+                    ctx.fillText(`Boss: ${nextBossIn}秒`, 10, 90);
+                } else {
+                    ctx.fillStyle = 'red';
+                    ctx.fillText(`Boss即將出現!`, 10, 90);
+                }
+                
+                // 顯示大Boss資訊
+                if (gameState.megaBosses.length > 0) {
+                    ctx.fillStyle = 'darkred';
+                    ctx.fillText(`大Boss: ${gameState.megaBosses.length}/${gameState.maxMegaBosses}隻`, 10, 120);
+                } else if (gameState.megaBossCount < gameState.maxMegaBosses) {
+                    ctx.fillStyle = 'purple';
+                    ctx.fillText(`按空白鍵召喚大Boss`, 10, 120);
+                }
+            }
+            
+            if (gameState.gameOver) {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                ctx.fillStyle = 'red';
+                ctx.font = '40px Arial';
+                ctx.fillText('遊戲結束！', canvas.width/2 - 100, canvas.height/2 - 40);
+                
+                ctx.fillStyle = 'white';
+                ctx.font = '20px Arial';
+                ctx.fillText(`存活時間: ${formatTime(gameState.survivalTime)}`, 
+                            canvas.width/2 - 100, canvas.height/2);
+                ctx.fillText('按 CapsLock 重新開始', 
+                            canvas.width/2 - 100, canvas.height/2 + 40);
+            }
+        }
+
+        function resetGame() {
+            gameState = {
+                player: {
+                    x: canvas.width / 2,
+                    y: canvas.height / 2,
+                    size: 20,
+                    speed: 5,
+                    health: 10,
+                    color: 'blue'
+                },
+                monsters: [createMonster()],
+                bosses: [],
+                stones: [],
+                missiles: [],
+                megaBosses: [],
+                gameOver: false,
+                lastMonsterSpawn: Date.now(),
+                lastBossSpawn: Date.now(),
+                lastShot: 0,
+                megaBossCount: 0,
+                maxMegaBosses: 5,
+                startTime: Date.now(),
+                survivalTime: 0
+            };
+        }
+
+        function gameLoop() {
+            if (!gameState.gameOver) {
+                updatePlayer();
+                updateProjectiles();
+                updateEnemies();
+                checkCollisions();
+            }
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        gameLoop();
+    </script>
+</body>
+</html>
